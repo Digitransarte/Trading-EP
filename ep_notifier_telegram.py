@@ -129,6 +129,24 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
         return False
 
 
+
+def format_canslim_candidate(c: dict, rank: int) -> str:
+    """Format one CANSLIM candidate as a Telegram message block."""
+    ticker     = c.get("ticker", "?")
+    change_pct = c.get("change_pct", 0)
+    vol_ratio  = c.get("vol_ratio", 0)
+    price      = c.get("price", 0)
+    score      = c.get("score", 0)
+
+    lines = [
+        f"{rank}. *{ticker}* 📊 `CANSLIM`",
+        f"",
+        f"💰 Preço: `${price:.2f}`",
+        f"📈 Variação: `+{change_pct:.1f}%` · Vol: `{vol_ratio:.1f}×`",
+        f"⭐ Score: `{score:.1f}`",
+    ]
+    return "\n".join(lines)
+
 def notify(scan_result: dict, min_score: int = 50) -> bool:
     """
     Send EP scan results to Telegram.
@@ -185,6 +203,19 @@ def notify(scan_result: dict, min_score: int = 50) -> bool:
         time.sleep(0.5)  # avoid Telegram flood limit
 
     # ── Footer ────────────────────────────────────────────────────────────────
+    # ── CANSLIM section ──────────────────────────────────────────────────────
+    canslim = scan_result.get("canslim", [])
+    if canslim:
+        cs_header = (
+            f"📊 *CANSLIM* · {len(canslim)} candidatos\n"
+            f"{'─' * 28}"
+        )
+        send_message(cs_header)
+        for i, c in enumerate(canslim[:5], 1):
+            send_message(format_canslim_candidate(c, i))
+            import time as _time
+            _time.sleep(0.4)
+
     footer = (
         f"{'─' * 28}\n"
         f"_⚠️ Apenas informativo. Não é aconselhamento financeiro._\n"
