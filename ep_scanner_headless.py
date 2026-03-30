@@ -261,6 +261,39 @@ def scan_ep(today: dict, prev: dict, min_gap=8.0, min_vol=300_000,
     return results[:15]
 
 
+
+# ─── CANSLIM SCAN ─────────────────────────────────────────────────────────────
+
+def scan_canslim(today: dict, prev: dict, min_change=2.0, min_vol=300_000,
+                 min_price=15.0, min_vol_ratio=1.3) -> list:
+    """
+    CANSLIM scanner: stocks with strong price + volume on the day.
+    Pure price/volume — no fundamentals needed.
+    """
+    results = []
+    for ticker, t in today.items():
+        if not is_clean_ticker(ticker): continue
+        if ticker not in prev: continue
+        p       = prev[ticker]
+        price   = t.get("c", 0)
+        volume  = t.get("v", 0)
+        p_close = p.get("c", 0)
+        if price < min_price or volume < min_vol or p_close == 0: continue
+        change_pct = (price - p_close) / p_close * 100
+        vol_ratio  = volume / max(p.get("v", 1), 1)
+        if change_pct >= min_change and vol_ratio >= min_vol_ratio:
+            score = round((change_pct * 0.4 + vol_ratio * 2.0) * price / 50, 2)
+            results.append({
+                "ticker":     ticker,
+                "price":      round(price, 2),
+                "change_pct": round(change_pct, 2),
+                "vol_ratio":  round(vol_ratio, 2),
+                "volume":     int(volume),
+                "score":      score,
+            })
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:10]
+
 # ─── CLAUDE ANALYSIS ──────────────────────────────────────────────────────────
 
 def parse_json(text: str) -> list:
@@ -331,7 +364,8 @@ Be critical. ep_score 0-100."""
 # ─── MAIN RUNNER ──────────────────────────────────────────────────────────────
 
 def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
-             max_candidates=8, use_claude=True) -> dict:
+             max_candidates=8, use_claude=True,
+             run_canslim=True, min_change_cs=2.0, min_price_cs=15.0) -> dict:
     """
     Full EP scan pipeline. Returns dict with candidates and metadata.
     """
@@ -357,10 +391,17 @@ def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
     raw_candidates = scan_ep(today_data, prev_data, min_gap, min_vol, min_price, min_vol_ratio)
     print(f"      {len(raw_candidates)} candidatos detectados")
 
-    if not raw_candidates:
+    # CANSLIM scan (runs regardless of EP results)
+    canslim_raw = []
+    if run_canslim:
+        canslim_raw = scan_canslim(today_data, prev_data, min_change_cs, min_vol, min_price_cs)
+        print(f"      CANSLIM: {len(canslim_raw)} candidatos")
+
+    if not raw_candidates and not canslim_raw:
         return {
             "session_date": session_date,
             "candidates": [],
+            "canslim": [],
             "n_universe": len(today_data),
         }
 
@@ -425,12 +466,25 @@ def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
             "sector":        fund.get("sector", ""),
         })
 
-    print(f"\n✅ Scan completo — {len(final)} candidatos EP")
+    # Build CANSLIM final list
+    canslim_final = []
+    for r in canslim_raw[:8]:
+        canslim_final.append({
+            "ticker":     r["ticker"],
+            "price":      r["price"],
+            "change_pct": r["change_pct"],
+            "vol_ratio":  r["vol_ratio"],
+            "volume":     r["volume"],
+            "score":      r["score"],
+        })
+
+    print(f"\n✅ Scan completo — {len(final)} EP · {len(canslim_final)} CANSLIM")
     return {
         "session_date": session_date,
         "prev_date":    prev_date,
         "n_universe":   len(today_data),
         "candidates":   final,
+        "canslim":      canslim_final,
     }
 
 
