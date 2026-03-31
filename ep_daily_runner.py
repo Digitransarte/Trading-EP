@@ -71,6 +71,16 @@ def main():
     print(f"\nA notificar via Telegram (min_score={args.min_score})...")
     notify(result, min_score=args.min_score)
 
+    # ── Weekly digest (sextas-feiras) ────────────────────────────────────────
+    from datetime import date
+    if date.today().weekday() == 4:  # 4 = sexta-feira
+        print("\nÉ sexta-feira — a enviar digest semanal...")
+        try:
+            from ep_weekly_digest import send_weekly_digest
+            send_weekly_digest()
+        except Exception as e:
+            print(f"Digest falhou: {e}")
+
     # ── Summary ───────────────────────────────────────────────────────────────
     candidates = result.get("candidates", [])
     filtered   = [c for c in candidates if c.get("magna_score", 0) >= args.min_score]
