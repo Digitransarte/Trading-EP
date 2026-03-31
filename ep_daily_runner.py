@@ -68,8 +68,22 @@ def main():
         print(f"\n💾 Resultados guardados em: {args.output_json}")
 
     # ── Telegram notification ─────────────────────────────────────────────────
+    # Fetch macro context
+    macro_data = None
+    if not args.no_claude:
+        print("\n🌍 A obter contexto macro...")
+        try:
+            from ep_macro_context import get_macro_context
+            sectors = list({c.get("sector","") for c in result.get("candidates",[]) if c.get("sector")})
+            macro_data = get_macro_context(sectors[:5])
+            sentiment = macro_data.get("sentiment","?")
+            impact    = macro_data.get("ep_impact",{}).get("overall","?")
+            print(f"   Sentimento: {sentiment} · Impacto EPs: {impact}")
+        except Exception as e:
+            print(f"   Macro falhou: {e}")
+
     print(f"\nA notificar via Telegram (min_score={args.min_score})...")
-    notify(result, min_score=args.min_score)
+    notify(result, min_score=args.min_score, macro=macro_data)
 
     # ── Weekly digest (sextas-feiras) ────────────────────────────────────────
     from datetime import date

@@ -147,7 +147,7 @@ def format_canslim_candidate(c: dict, rank: int) -> str:
     ]
     return "\n".join(lines)
 
-def notify(scan_result: dict, min_score: int = 50) -> bool:
+def notify(scan_result: dict, min_score: int = 50, macro: dict = None) -> bool:
     """
     Send EP scan results to Telegram.
     Only sends candidates with magna_score >= min_score.
@@ -157,6 +157,16 @@ def notify(scan_result: dict, min_score: int = 50) -> bool:
     session    = scan_result.get("session_date", "—")
     n_universe = scan_result.get("n_universe", 0)
     error      = scan_result.get("error")
+
+    # Send macro context first if available
+    if macro and macro.get("_source") not in ("unavailable", "fallback", None):
+        try:
+            from ep_macro_context import format_macro_telegram
+            macro_msg = format_macro_telegram(macro)
+            send_message(macro_msg)
+            import time as _t; _t.sleep(0.5)
+        except Exception as e:
+            print(f"Macro telegram falhou: {e}")
 
     # Error case
     if error:
