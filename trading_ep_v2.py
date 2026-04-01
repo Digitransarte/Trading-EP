@@ -820,12 +820,23 @@ Return ONLY raw JSON array for ALL {len(tickers)} tickers: {tickers}
 
 ep_score 0-100. Be critical. Always respond with educational_note and key_lesson in Portuguese."""
 
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=3000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return parse_json_response(msg.content[0].text)
+    for attempt in range(3):
+        try:
+            msg = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=3000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return parse_json_response(msg.content[0].text)
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < 2:
+                wait = 60 * (attempt + 1)
+                st.warning(f"Rate limit — a aguardar {wait}s antes de tentar novamente...")
+                time.sleep(wait)
+            else:
+                st.error(f"Claude EP falhou: {e}")
+                return []
+    return []
 
 
 def claude_analyze_canslim(candidates):
@@ -899,6 +910,245 @@ def render_magna_breakdown(magna: dict):
             unsafe_allow_html=True
         )
 
+
+
+def pick_best_candidates(ep_raw: list, ep_analysis: list, magna_scores: dict,
+                          ep_fundamentals: dict, macro: dict = None, top_n: int = 2) -> list:
+    """
+    Select and explain the best EP candidates of the day.
+    Uses Claude to provide a detailed explanation of why each was chosen.
+    """
+    if not ep_raw:
+        return []
+
+    # Build composite score for ranking
+    analysis_lk = {a["ticker"]: a for a in ep_analysis}
+
+    scored = []
+    for r in ep_raw:
+        t    = r["ticker"]
+        a    = analysis_lk.get(t, {})
+        mag  = magna_scores.get(t, {})
+        fund = ep_fundamentals.get(t, {})
+
+        ep_score  = a.get("ep_score") or mag.get("total", 0)
+        gap_pct   = r.get("gap_pct", 0)
+        vol_ratio = r.get("vol_ratio", 0)
+        ep_type   = a.get("ep_type") or mag.get("ep_type", "STANDARD")
+        window    = a.get("entry_window", "LATE")
+
+        # Type bonus
+        type_bonus = {"TURNAROUND": 15, "GROWTH": 10, "STORY/NEGLECTED": 8,
+                      "9M_EP": 5, "STANDARD": 0}.get(ep_type, 0)
+        # Window bonus
+        win_bonus  = {"PRIME": 10, "OPEN": 5, "LATE": 0}.get(window, 0)
+        # Gap bonus (>25% gets extra)
+        gap_bonus  = 10 if gap_pct >= 25 else 5 if gap_pct >= 15 else 0
+        # Vol bonus (>10x gets extra)
+        vol_bonus  = 10 if vol_ratio >= 10 else 5 if vol_ratio >= 5 else 0
+
+        composite = ep_score + type_bonus + win_bonus + gap_bonus + vol_bonus
+
+        scored.append({
+            "ticker":    t,
+            "composite": composite,
+            "ep_score":  ep_score,
+            "raw":       r,
+            "analysis":  a,
+            "magna":     mag,
+            "fund":      fund,
+        })
+
+    scored.sort(key=lambda x: x["composite"], reverse=True)
+    best = scored[:top_n]
+
+    if not best or not ANTHROPIC_KEY:
+        return best
+
+    # Build Claude prompt for detailed explanation
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+    macro_ctx = ""
+    if macro and macro.get("_source") not in ("unavailable", "fallback", None):
+        try:
+            from ep_macro_context import macro_to_prompt_context
+            macro_ctx = macro_to_prompt_context(macro)
+        except:
+            pass
+
+    candidates_data = []
+    for b in best:
+        t    = b["ticker"]
+        r    = b["raw"]
+        a    = b["analysis"]
+        f    = b["fund"]
+        mag  = b["magna"]
+        candidates_data.append({
+            "ticker":       t,
+            "ep_score":     b["ep_score"],
+            "composite":    b["composite"],
+            "ep_type":      a.get("ep_type") or mag.get("ep_type", ""),
+            "gap_pct":      r.get("gap_pct"),
+            "vol_ratio":    r.get("vol_ratio"),
+            "entry_window": a.get("entry_window"),
+            "thesis":       a.get("thesis", ""),
+            "catalyst":     a.get("catalyst_type", ""),
+            "catalyst_detail": a.get("catalyst_detail", ""),
+            "red_flags":    a.get("red_flags"),
+            "earnings_pct": round((f.get("earnings_growth") or 0) * 100),
+            "revenue_pct":  round((f.get("revenue_growth") or 0) * 100),
+            "float_M":      round((f.get("float_shares") or 0) / 1e6, 1),
+            "market_cap":   f.get("market_cap"),
+            "sector":       f.get("sector", ""),
+            "neglect":      mag.get("neglect", {}).get("label", ""),
+            "magna_breakdown": {k: v.get("score",0) for k,v in mag.get("breakdown",{}).items()},
+        })
+
+    prompt = f"""És um coach de trading especializado em Episodic Pivots (Pradeep Bonde).
+
+{macro_ctx}
+
+Estes são os melhores candidatos EP detectados hoje pelo scanner:
+{json.dumps(candidates_data, indent=2, ensure_ascii=False)}
+
+Para CADA candidato, explica em português europeu (tom directo, educativo, como um mentor):
+
+1. PORQUÊ é o melhor setup de hoje — quais os critérios mais fortes
+2. O que torna este setup especialmente interessante (ou preocupante)  
+3. Como o contexto macro afecta este candidato especificamente
+4. Plano concreto: entrada, stop, o que vigiar
+5. Nível de confiança (Alto/Médio/Baixo) e porquê
+
+Responde APENAS com JSON:
+[{{
+  "ticker": "XXXX",
+  "rank": 1,
+  "confidence": "Alto|Médio|Baixo",
+  "why_best": "explicação detalhada em 3-4 frases de porque é o melhor setup",
+  "strengths": ["ponto forte 1", "ponto forte 2", "ponto forte 3"],
+  "concerns": ["preocupação 1"],
+  "macro_alignment": "como o contexto macro afecta este candidato",
+  "action_plan": "entrada: X · stop: Y · vigiar: Z",
+  "one_liner": "resumo em 1 frase que um trader principiante consegue entender"
+}}]"""
+
+    try:
+        time.sleep(15)  # avoid rate limit
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        explanations = parse_json_response(msg.content[0].text)
+        exp_lk = {e["ticker"]: e for e in explanations}
+        for b in best:
+            b["explanation"] = exp_lk.get(b["ticker"], {})
+    except Exception as e:
+        st.warning(f"Explicação do melhor candidato falhou: {e}")
+
+    return best
+
+
+def render_best_candidates(best: list, magna_scores: dict, ep_fundamentals: dict):
+    """Render the best candidates section with detailed explanation."""
+    if not best:
+        return
+
+    st.markdown("## 🏆 Melhor Setup do Dia")
+    st.caption("Selecção automática baseada em score composto: MAGNA + tipo EP + janela de entrada + gap + volume")
+
+    for i, b in enumerate(best):
+        t   = b["ticker"]
+        a   = b["analysis"]
+        exp = b.get("explanation", {})
+        r   = b["raw"]
+        mag = b["magna"]
+
+        ep_score  = b["ep_score"]
+        ep_type   = a.get("ep_type") or mag.get("ep_type", "STANDARD")
+        confidence= exp.get("confidence", "—")
+        conf_color= {"Alto": "#00e87a", "Médio": "#f5c842", "Baixo": "#ff5e5e"}.get(confidence, "#667a99")
+
+        rank_emoji = ["🥇", "🥈", "🥉"][i] if i < 3 else f"#{i+1}"
+
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg,#0d1422,#111827);'
+            f'border:1px solid #1e3a5f;border-radius:12px;padding:20px;margin:8px 0">',
+            unsafe_allow_html=True
+        )
+
+        col_score, col_info = st.columns([1, 3])
+
+        with col_score:
+            st.markdown(
+                f'<div style="text-align:center">'
+                f'<div style="font-size:2em">{rank_emoji}</div>'
+                f'<div class="{score_class(ep_score)}" style="margin:8px auto;width:70px">{ep_score}</div>'
+                f'<div style="color:{conf_color};font-size:0.8em;font-weight:600">{confidence}</div>'
+                f'<div style="color:#667a99;font-size:0.7em">CONFIANÇA</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        with col_info:
+            company = a.get("company_name","")
+            gap_val = r.get("gap_pct", 0)
+            vol_val = r.get("vol_ratio", 0)
+            win_val = a.get("entry_window", "—")
+            st.markdown(
+                f"**{t}** · {company}  \n"
+                f"Gap `+{gap_val:.1f}%` · Vol `{vol_val:.1f}x` · "
+                f"{ep_type_tag(ep_type)} · {win_val}",
+                unsafe_allow_html=True
+            )
+
+            if exp.get("one_liner"):
+                st.info(f"💬 {exp['one_liner']}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Detailed explanation
+        if exp:
+            with st.expander(f"📖 Análise detalhada — {t}", expanded=(i==0)):
+                if exp.get("why_best"):
+                    st.markdown("**Porquê é o melhor setup hoje:**")
+                    st.markdown(exp["why_best"])
+
+                col_s, col_c = st.columns(2)
+                with col_s:
+                    strengths = exp.get("strengths", [])
+                    if strengths:
+                        st.markdown("**✅ Pontos fortes:**")
+                        for s in strengths:
+                            st.markdown(f"• {s}")
+                with col_c:
+                    concerns = exp.get("concerns", [])
+                    if concerns:
+                        st.markdown("**⚠️ Preocupações:**")
+                        for c in concerns:
+                            st.markdown(f"• {c}")
+
+                if exp.get("macro_alignment"):
+                    st.markdown("")
+                    st.markdown("**🌍 Alinhamento macro:**")
+                    st.markdown(
+                        f'<div style="background:#1e3a5f20;border-left:3px solid #3b82f6;'
+                        f'padding:10px 14px;border-radius:4px">{exp["macro_alignment"]}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                if exp.get("action_plan"):
+                    st.markdown("")
+                    st.markdown(
+                        f'<div style="background:#00e87a10;border-left:3px solid #00e87a;'
+                        f'padding:10px 14px;border-radius:4px;margin-top:8px">'
+                        f'<span style="color:#00e87a;font-weight:600">📋 PLANO DE ACÇÃO</span><br>'
+                        f'<span style="color:#c9d1e0">{exp["action_plan"]}</span></div>',
+                        unsafe_allow_html=True
+                    )
+
+        if i < len(best) - 1:
+            st.divider()
 
 def render_ep_card(raw: dict, analysis: dict, magna: dict, fund: dict, wl_tickers: set):
     a = analysis or {}
@@ -1048,6 +1298,30 @@ def render_ep_card(raw: dict, analysis: dict, magna: dict, fund: dict, wl_ticker
             st.info(a["thesis"])
         if a.get("red_flags"):
             st.warning(f"⚠️ {a['red_flags']}")
+
+        # KB card context
+        _kb_adj = st.session_state.get("kb_adj", {})
+        if _kb_adj.get("data_available"):
+            rec_gap = _kb_adj.get("min_gap_recommended")
+            rec_vol = _kb_adj.get("min_vol_ratio_recommended")
+            gap_pct = raw.get("gap_pct", 0)
+            vol_r   = raw.get("vol_ratio", 0)
+            _kb_notes = []
+            if rec_gap and gap_pct < rec_gap:
+                _kb_notes.append(f"gap {gap_pct:.0f}% abaixo do recomendado ({rec_gap}%)")
+            if rec_vol and vol_r < rec_vol:
+                _kb_notes.append(f"vol {vol_r:.1f}× abaixo do recomendado ({rec_vol}×)")
+            if raw.get("ticker") in _kb_adj.get("avoided_tickers", []):
+                _kb_notes.append("ticker em blacklist da KB")
+            if not _kb_notes:
+                _kb_notes.append(f"gap e vol dentro dos parâmetros recomendados pela KB")
+            st.markdown(
+                f'<div style="background:#a78bfa10;border-left:2px solid #a78bfa33;'
+                f'padding:6px 12px;border-radius:4px;margin:6px 0;font-size:0.82em">'
+                f'<span style="color:#a78bfa">🧠 KB diz:</span> '
+                f'<span style="color:#c9d1e0">{" · ".join(_kb_notes)}</span></div>',
+                unsafe_allow_html=True
+            )
 
         # Educational section
         edu_note  = a.get("educational_note")
@@ -1209,9 +1483,17 @@ with st.sidebar:
             '○ SEM DADOS · corre backtest</span>',
             unsafe_allow_html=True
         )
+    st.divider()
+    st.markdown("### 🌍 Macro Context")
+    use_macro = st.toggle("Análise macro (web search)", value=True, key="use_macro_toggle")
+    if use_macro:
+        st.caption("Pesquisa contexto actual antes do scan")
+    else:
+        st.caption("Desactivado — evita rate limit")
+
     st.caption(f"📌 Watchlist: {len(load_watchlist())} tickers")
 
-tab_scan, tab_watchlist = st.tabs(["🔍 Scanner", "📌 Watchlist"])
+tab_scan, tab_watchlist, tab_kb_learn = st.tabs(["🔍 Scanner", "📌 Watchlist", "🧠 O que aprendi"])
 
 with tab_scan:
     today_str = last_trading_day(1)
@@ -1287,13 +1569,18 @@ with tab_scan:
         ep_analysis      = []
         canslim_analysis = []
 
+        # Pausa para evitar rate limit após o macro context (30k tokens/min)
+        if st.session_state.get("macro_context") and st.session_state.get("use_macro_toggle", True):
+            time.sleep(30)
+
         if ep_raw:
-            with st.spinner(f"Claude a analisar {len(ep_raw)} candidatos EP (MAGNA 53)..."):
-                ep_analysis = claude_analyze_ep(ep_raw[:10], ep_fundamentals, magna_scores)
+            with st.spinner(f"Claude a analisar {min(len(ep_raw),5)} candidatos EP (MAGNA 53)..."):
+                ep_analysis = claude_analyze_ep(ep_raw[:5], ep_fundamentals, magna_scores)
 
         if canslim_raw:
-            with st.spinner(f"Claude a analisar {len(canslim_raw)} candidatos CANSLIM..."):
-                canslim_analysis = claude_analyze_canslim(canslim_raw[:10])
+            time.sleep(15)  # pausa entre EP e CANSLIM
+            with st.spinner(f"Claude a analisar {min(len(canslim_raw),5)} candidatos CANSLIM..."):
+                canslim_analysis = claude_analyze_canslim(canslim_raw[:5])
 
         # ── Save to session state ────────────────────────────────────────────
         st.session_state.ep_raw           = ep_raw
@@ -1327,7 +1614,7 @@ with tab_scan:
 
             # ── Macro context panel ────────────────────────────────────────────────────────────────
             macro = st.session_state.get("macro_context")
-            if macro is None:
+            if macro is None and st.session_state.get("use_macro_toggle", True):
                 sectors = list({f.get("sector","") for f in ep_fundamentals.values() if f.get("sector")})
                 with st.spinner("🌍 A obter contexto macro actual..."):
                     macro = load_macro_context(sectors[:5])
@@ -1374,6 +1661,19 @@ with tab_scan:
                 m4.metric("Média MAGNA", f"{sum(scores)//max(len(scores),1)}/100")
 
             if ep_raw:
+                # ── Best candidates section ───────────────────────────────────
+                macro_ctx = st.session_state.get("macro_context")
+                with st.spinner("🏆 A seleccionar e analisar o melhor setup..."):
+                    best = pick_best_candidates(
+                        ep_raw, ep_analysis, magna_scores,
+                        ep_fundamentals, macro_ctx, top_n=2
+                    )
+                if best:
+                    render_best_candidates(best, magna_scores, ep_fundamentals)
+                    st.divider()
+
+                # ── All candidates ────────────────────────────────────────────
+                st.markdown("### 📋 Todos os Candidatos")
                 merged = merge(ep_raw, ep_analysis)
                 for raw, analysis in merged:
                     t     = raw["ticker"]
@@ -1429,3 +1729,104 @@ with tab_watchlist:
 
 st.divider()
 st.caption("⚠️ Apenas para fins informativos. Não é aconselhamento financeiro.")
+
+# ─── TAB: O QUE O SISTEMA APRENDEU ──────────────────────────────────────────
+
+with tab_kb_learn:
+    st.markdown("## 🧠 O que o sistema aprendeu")
+    st.markdown(
+        "Insights derivados automaticamente de **{n} trades** backtestados. "
+        "A KB converte padrões numéricos em conhecimento accionável.".format(
+            n=load_kb_adjustments().get("total_trades_in_kb", 0)
+        )
+    )
+
+    _kb_check = load_kb_adjustments()
+    if not _kb_check.get("data_available"):
+        st.info("KB ainda sem dados — corre o backtester primeiro e guarda os resultados na KB.")
+    else:
+        col_refresh, col_info = st.columns([1, 3])
+        with col_refresh:
+            if st.button("🔄 Gerar insights com Claude", type="primary"):
+                with st.spinner("Claude a analisar os dados da KB..."):
+                    try:
+                        from knowledge_base import get_kb_narrative
+                        narrative = get_kb_narrative(mode="panel")
+                        st.session_state["kb_narrative_panel"] = narrative
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+        with col_info:
+            st.caption("Usa Claude para transformar os dados numéricos em lições compreensíveis.")
+
+        narrative = st.session_state.get("kb_narrative_panel")
+
+        if narrative and narrative.get("available"):
+            parsed = narrative.get("parsed", {})
+
+            if parsed.get("headline"):
+                st.markdown(
+                    f'<div style="background:#0d1422;border:1px solid #1e2d45;border-radius:8px;'
+                    f'padding:16px 20px;margin:12px 0">'
+                    f'<div style="color:#00e87a;font-size:1.1em;font-weight:600">'
+                    f'{parsed["headline"]}</div></div>',
+                    unsafe_allow_html=True
+                )
+
+            if parsed.get("key_finding"):
+                st.info(f"🔑 {parsed['key_finding']}")
+
+            lessons = parsed.get("lessons", [])
+            if lessons:
+                st.markdown("### 📚 Lições aprendidas")
+                for i, lesson in enumerate(lessons):
+                    with st.expander(
+                        f"**{lesson.get('title', f'Lição {i+1}')}** — `{lesson.get('data','')}`",
+                        expanded=(i == 0)
+                    ):
+                        st.markdown(lesson.get("explanation", ""))
+
+            col_a, col_c = st.columns(2)
+            with col_a:
+                if parsed.get("action"):
+                    st.markdown(
+                        f'<div style="background:#00e87a10;border-left:3px solid #00e87a;'
+                        f'padding:10px 14px;border-radius:4px">'
+                        f'<span style="color:#00e87a;font-weight:600">✅ ACÇÃO</span><br>'
+                        f'<span style="color:#c9d1e0">{parsed["action"]}</span></div>',
+                        unsafe_allow_html=True
+                    )
+            with col_c:
+                if parsed.get("caution"):
+                    st.markdown(
+                        f'<div style="background:#ff5e5e10;border-left:3px solid #ff5e5e;'
+                        f'padding:10px 14px;border-radius:4px">'
+                        f'<span style="color:#ff5e5e;font-weight:600">⚠️ CAUTELA</span><br>'
+                        f'<span style="color:#c9d1e0">{parsed["caution"]}</span></div>',
+                        unsafe_allow_html=True
+                    )
+
+            # Raw data table
+            with st.expander("📊 Dados brutos da KB", expanded=False):
+                data = narrative.get("data", {})
+                if data.get("gap_performance"):
+                    st.markdown("**Performance por Gap%:**")
+                    import pandas as pd
+                    rows = []
+                    for label, s in data["gap_performance"].items():
+                        rows.append({"Gap": label, "N": s["n"],
+                                     "Win Rate": f"{s['win_rate']:.1f}%",
+                                     "Avg Return": f"{s['avg_return']:+.1f}%"})
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+                if data.get("vol_performance"):
+                    st.markdown("**Performance por Vol Ratio:**")
+                    rows = []
+                    for label, s in data["vol_performance"].items():
+                        rows.append({"Volume": label, "N": s["n"],
+                                     "Win Rate": f"{s['win_rate']:.1f}%",
+                                     "Avg Return": f"{s['avg_return']:+.1f}%"})
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+if __name__ == "__main__":
+    pass

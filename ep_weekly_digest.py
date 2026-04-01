@@ -280,6 +280,16 @@ def send_weekly_digest():
         send(stats_msg)
         time.sleep(0.5)
 
+    # KB narrative — 3 key lessons
+    try:
+        from knowledge_base import get_kb_narrative
+        narrative = get_kb_narrative(mode="summary")
+        if narrative.get("available") and narrative.get("text"):
+            send(f"📚 *Lições da Knowledge Base:*\n\n{narrative['text']}")
+            time.sleep(0.5)
+    except Exception as e:
+        print(f"KB narrative falhou: {e}")
+
     # Claude weekly summary
     if stats:
         summary = generate_weekly_summary(stats)
