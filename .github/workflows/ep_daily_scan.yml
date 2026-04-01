@@ -22,7 +22,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-        run: python ep_daily_runner.py --output-json results.json
+        run: python ep_daily_runner.py --no-claude --output-json results.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
