@@ -1,8 +1,14 @@
 name: EP Daily Scanner
-on: [push, workflow_dispatch]
+on:
+  schedule:
+    - cron: '0 11 * * 1-5'
+    - cron: '30 19 * * 1-5'
+  workflow_dispatch:
+  push:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,10 +21,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         run: python ep_daily_runner.py --output-json results.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results
+          name: results-${{ github.run_id }}
           path: results.json
           retention-days: 30
