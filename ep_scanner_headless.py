@@ -443,27 +443,55 @@ def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
         a    = analysis_map.get(t, {})
         mag  = magna_scores.get(t, {"total": 0, "ep_type": "STANDARD"})
         fund = fundamentals.get(t, {})
+
+        # ── Stop-loss ancorado ao pivot EP (Pradeep Bonde) ────────────────────
+        # Stop = mínima do dia do EP (ep_low)
+        # Lógica: se o preço fechar abaixo da mínima do gap day, o sinal falhou
+        # Fallback: prev_close (fecho pré-EP) para gaps muito grandes
+        ep_low    = r.get("ep_low", 0)
+        prev_close = r.get("prev_close", 0)
+        price     = r["price"]
+
+        # Stop primário: mínima do dia do gap
+        # Stop secundário: prev_close (âncora original do pivot)
+        stop_price = ep_low if ep_low > 0 else prev_close
+        stop_pct_from_price = round((price - stop_price) / price * 100, 1) if stop_price > 0 else a.get("stop_loss_pct", 8)
+
+        # Detecção biotech: sector Healthcare sem earnings recorrentes
+        sector = fund.get("sector", "")
+        earnings_pct = round((fund.get("earnings_growth") or 0) * 100)
+        revenue_pct  = round((fund.get("revenue_growth") or 0) * 100)
+        is_biotech_speculative = (
+            sector in ("Healthcare", "Biotechnology") and
+            earnings_pct == 0 and revenue_pct < 0
+        )
+
         final.append({
-            "ticker":        t,
-            "price":         r["price"],
-            "gap_pct":       r["gap_pct"],
-            "vol_ratio":     r["vol_ratio"],
-            "volume":        r["volume"],
-            "magna_score":   a.get("ep_score") or mag["total"],
-            "ep_type":       a.get("ep_type") or mag["ep_type"],
-            "catalyst":      a.get("catalyst_type", "—"),
+            "ticker":          t,
+            "price":           price,
+            "gap_pct":         r["gap_pct"],
+            "vol_ratio":       r["vol_ratio"],
+            "volume":          r["volume"],
+            "magna_score":     a.get("ep_score") or mag["total"],
+            "ep_type":         a.get("ep_type") or mag["ep_type"],
+            "catalyst":        a.get("catalyst_type", "—"),
             "catalyst_detail": a.get("catalyst_detail", ""),
-            "entry_window":  a.get("entry_window", "PRIME"),
-            "thesis":        a.get("thesis", ""),
-            "red_flags":     a.get("red_flags"),
-            "risk_level":    a.get("risk_level", "—"),
-            "stop_loss_pct": a.get("stop_loss_pct", 8),
-            "float_M":       round((fund.get("float_shares") or 0) / 1e6, 1),
-            "market_cap":    fmt_large(fund.get("market_cap")),
-            "earnings_pct":  round((fund.get("earnings_growth") or 0) * 100),
-            "revenue_pct":   round((fund.get("revenue_growth") or 0) * 100),
-            "neglect_label": r.get("neglect", {}).get("label", "—"),
-            "sector":        fund.get("sector", ""),
+            "entry_window":    a.get("entry_window", "PRIME"),
+            "thesis":          a.get("thesis", ""),
+            "red_flags":       a.get("red_flags"),
+            "risk_level":      a.get("risk_level", "—"),
+            # Stop-loss ancorado ao EP pivot (não percentagem arbitrária)
+            "stop_price":      round(stop_price, 2),
+            "stop_pct":        stop_pct_from_price,
+            "prev_close":      round(prev_close, 2),
+            "ep_low":          round(ep_low, 2),
+            "float_M":         round((fund.get("float_shares") or 0) / 1e6, 1),
+            "market_cap":      fmt_large(fund.get("market_cap")),
+            "earnings_pct":    earnings_pct,
+            "revenue_pct":     revenue_pct,
+            "neglect_label":   r.get("neglect", {}).get("label", "—"),
+            "sector":          sector,
+            "is_biotech_spec": is_biotech_speculative,
         })
 
     # Build CANSLIM final list

@@ -93,14 +93,32 @@ def format_candidate(c: dict, rank: int) -> str:
         lines.append(f"")
         lines.append(f"⚠️ _{red_flags}_")
 
-    # Entry
-    neglect = c.get("neglect_label", "")
-    sector  = c.get("sector", "")
+    # Entry + Stop ancorado ao pivot EP
+    neglect    = c.get("neglect_label", "")
+    sector     = c.get("sector", "")
+    stop_price = c.get("stop_price", 0)
+    stop_pct   = c.get("stop_pct", c.get("stop_loss_pct", 8))
+    prev_close = c.get("prev_close", 0)
+
     lines.append(f"")
+
+    # Stop em preço absoluto (âncora Pradeep: mínima do dia do EP)
+    if stop_price > 0:
+        stop_str = f"`${stop_price:.2f}` (-{stop_pct:.1f}%)"
+        if prev_close > 0:
+            stop_str += f" · Pivot: `${prev_close:.2f}`"
+    else:
+        stop_str = f"`-{stop_pct}%`"
+
     lines.append(
-        f"🕐 Entrada: {WINDOW_EMOJI.get(window, '⬜')} *{window}* "
-        f"· Stop: `-{c.get('stop_loss_pct', 8)}%`"
+        f"🕐 Entrada: {WINDOW_EMOJI.get(window, '⬜')} *{window}*"
     )
+    lines.append(f"🛑 Stop: {stop_str}")
+
+    # Flag biotech especulativo
+    if c.get("is_biotech_spec"):
+        lines.append(f"⚗️ _Biotech clínico: sem earnings recorrentes — catalisador especulativo_")
+
     if neglect and neglect != "—":
         lines.append(f"🌑 Neglect: _{neglect}_")
     if sector:
@@ -173,8 +191,24 @@ def notify(scan_result: dict, min_score: int = 50, macro: dict = None) -> bool:
         send_message(f"⚡ *EP Scanner* — {datetime.now().strftime('%d/%m/%Y')}\n\n❌ {error}")
         return False
 
-    # Filter by min score
+    # Filtro 1: score mínimo
     top = [c for c in candidates if c.get("magna_score", 0) >= min_score]
+
+    # Filtro 2: float excessivo — Pradeep: >100M = pullbacks frequentes, >500M = não entusiasmante
+    # Excepto: biotech especulativo onde o float não é o critério principal
+    float_excluded = []
+    filtered_top   = []
+    for c in top:
+        float_m = c.get("float_M", 0)
+        if float_m > 100 and not c.get("is_biotech_spec"):
+            float_excluded.append(c["ticker"])
+        else:
+            filtered_top.append(c)
+
+    if float_excluded:
+        print(f"[Telegram] Float >100M excluídos: {float_excluded}")
+
+    top = filtered_top
     top.sort(key=lambda c: c.get("magna_score", 0), reverse=True)
 
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
