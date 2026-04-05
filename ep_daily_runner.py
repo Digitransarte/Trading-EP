@@ -17,6 +17,7 @@ import argparse
 from datetime import datetime
 from ep_scanner_headless import run_scan
 from ep_notifier_telegram import notify, send_test_message
+from ep_forward_tracker import save_candidates, update_positions, format_tracker_telegram
 
 
 def main():
@@ -84,6 +85,42 @@ def main():
 
     print(f"\nA notificar via Telegram (min_score={args.min_score})...")
     notify(result, min_score=args.min_score, macro=macro_data)
+
+    # ── Forward Tracker ───────────────────────────────────────────────────────
+    candidates = result.get("candidates", [])
+    if candidates:
+        print("\n[Tracker] A registar candidatos...")
+        # Guardar novos candidatos (só os acima do threshold)
+        top_candidates = [c for c in candidates if c.get("magna_score", 0) >= args.min_score]
+        saved = save_candidates(top_candidates, scan_date=result.get("session_date"))
+        if saved:
+            print(f"[Tracker] {saved} novos candidatos registados")
+
+        # Actualizar posições abertas com dados de hoje
+        print("[Tracker] A actualizar posições abertas...")
+        from ep_scanner_headless import fetch_grouped
+        today_data = fetch_grouped(result.get("session_date", ""))
+        tracker_update = update_positions(today_data, result.get("session_date"))
+
+        # Enviar update do tracker para Telegram se houver fechamentos
+        if tracker_update.get("closed") or tracker_update.get("open", 0) > 0:
+            from ep_forward_tracker import get_tracker_stats
+            tracker_stats = get_tracker_stats()
+            tracker_msgs  = format_tracker_telegram(tracker_stats)
+            import requests as _req
+            from dotenv import load_dotenv as _ldenv
+            _ldenv()
+            token   = os.getenv("TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            for msg in tracker_msgs:
+                if token and chat_id and msg.strip():
+                    _req.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+                        timeout=15
+                    )
+                    import time as _t; _t.sleep(0.4)
+            print(f"[Tracker] {tracker_update['open']} abertas · {len(tracker_update['closed'])} fechadas hoje")
 
     # ── Weekly digest (sextas-feiras) ────────────────────────────────────────
     from datetime import date

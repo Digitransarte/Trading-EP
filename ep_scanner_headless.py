@@ -410,17 +410,29 @@ def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
     fundamentals = {}
     magna_scores = {}
 
-    for i, r in enumerate(raw_candidates[:max_candidates]):
+    POLYGON_INTERVAL = 13  # 5 chamadas/min → 12s mínimo, 13s com margem
+
+    # Limitar a 6 candidatos: 2 grouped + 6 history = 8 chamadas total (~2 min)
+    candidates_to_score = raw_candidates[:min(max_candidates, 6)]
+
+    for i, r in enumerate(candidates_to_score):
         t = r["ticker"]
-        print(f"      {t} ({i+1}/{min(len(raw_candidates), max_candidates)})")
+        print(f"      {t} ({i+1}/{len(candidates_to_score)}) — aguardar {POLYGON_INTERVAL}s (rate limit)...")
         fundamentals[t] = fetch_fundamentals(t)
 
+        time.sleep(POLYGON_INTERVAL)   # rate limit Polygon free: 5 calls/min
         history  = fetch_history(t, days=75)
-        time.sleep(0.15)
         neglect  = detect_neglect(history)
         magna_scores[t] = magna53_score(r, fundamentals[t], neglect)
         r["neglect"] = neglect
-        time.sleep(0.3)
+
+    # Candidatos restantes sem neglect detection (MAGNA score base)
+    for r in raw_candidates[len(candidates_to_score):max_candidates]:
+        t = r["ticker"]
+        if t not in fundamentals:
+            fundamentals[t] = fetch_fundamentals(t)
+        magna_scores[t] = magna53_score(r, fundamentals.get(t, {}), {"score": 50, "label": "Sem dados"})
+        r["neglect"] = {"score": 50, "label": "Sem dados", "pre_rally_pct": 0}
 
     # Re-sort by MAGNA score
     top = raw_candidates[:max_candidates]
