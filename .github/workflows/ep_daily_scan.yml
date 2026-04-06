@@ -1,41 +1,28 @@
 name: EP Daily Scanner
-
 on:
   schedule:
-    - cron: '0 6 * * 1-5'   # 07:00 Lisboa (Verão UTC+1) · trocar para '0 7' em Outubro
+    - cron: '0 6 * * 1-5'
+    - cron: '30 19 * * 1-5'
   workflow_dispatch:
-
+  push:
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Instalar dependências
-        run: pip install -r requirements.txt
-
-      - name: Correr scanner EP
+      - run: pip install -r requirements.txt
+      - name: Run
         env:
-          POLYGON_API_KEY:    ${{ secrets.POLYGON_API_KEY }}
-          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          PYTHONIOENCODING:   utf-8
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-        run: |
-          python ep_daily_runner.py \
-            --min-score 40 \
-            --min-gap 8.0 \
-            --min-vol-ratio 3.0 \
-            --max-candidates 8 \
-            --output-json results.json
-
+        run: python ep_daily_runner.py --no-claude --output-json results.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
