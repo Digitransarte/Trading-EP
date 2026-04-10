@@ -1,31 +1,114 @@
+# EP Daily Scanner — GitHub Actions
+#
+# Job 1 — Manhã 07:00 Lisboa (Verão UTC+1)
+#   Polygon EOD: detecta EPs de ontem (janela OPEN)
+#   Guarda ep_prev_closes.json como artefacto para o job da tarde
+#
+# Job 2 — Tarde 16:00 Lisboa (Verão UTC+1)
+#   yfinance intraday: detecta EPs do dia actual (janela PRIME)
+#   Usa ep_prev_closes.json do job da manhã
+#
+# Horários de inverno (Out-Mar, UTC+0):
+#   Manhã:  '0 7  * * 1-5'
+#   Tarde:  '0 15 * * 1-5'
+
 name: EP Daily Scanner
+
 on:
   schedule:
-    - cron: '0 6 * * 1-5'
-    - cron: '30 19 * * 1-5'
+    - cron: '0 6  * * 1-5'   # 07:00 Lisboa (Verão)
+    - cron: '0 15 * * 1-5'   # 16:00 Lisboa (Verão) — intraday PRIME
   workflow_dispatch:
-  push:
+
 jobs:
-  scan:
+
+  # ── Job 1: Scan da manhã (Polygon EOD) ──────────────────────────────────────
+  scan-morning:
+    name: Scan Manha (EOD)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - name: Run
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Scan EOD + guardar cache
         env:
-          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          POLYGON_API_KEY:    ${{ secrets.POLYGON_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING:   utf-8
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-        run: python ep_daily_runner.py --no-claude --output-json results.json
-      - uses: actions/upload-artifact@v4
+        run: |
+          python ep_daily_runner.py \
+            --min-score 40 \
+            --min-gap 8.0 \
+            --min-vol-ratio 3.0 \
+            --max-candidates 8 \
+            --output-json results.json
+
+      - name: Guardar cache de closes (para scan da tarde)
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-${{ github.run_id }}
+          name: prev-closes-${{ github.run_id }}
+          path: ep_prev_closes.json
+          retention-days: 1   # só precisa de durar 1 dia
+
+      - name: Guardar resultados
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-morning-${{ github.run_id }}
+          path: results.json
+          retention-days: 30
+
+  # ── Job 2: Scan da tarde (yfinance intraday PRIME) ───────────────────────────
+  scan-afternoon:
+    name: Scan Tarde (Intraday PRIME)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Corre independentemente — se manhã falhou, tenta na mesma
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Download cache de closes (do job da manhã, se existir)
+        uses: actions/download-artifact@v4
+        continue-on-error: true   # não falha se manhã não correu
+        with:
+          pattern: prev-closes-*
+          merge-multiple: true
+
+      - name: Scan intraday PRIME
+        env:
+          POLYGON_API_KEY:    ${{ secrets.POLYGON_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING:   utf-8
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        run: |
+          python ep_intraday_scanner.py \
+            --min-gap 8.0 \
+            --min-vol-ratio 3.0
+
+      - name: Guardar resultados
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-afternoon-${{ github.run_id }}
           path: results.json
           retention-days: 30
