@@ -30,7 +30,9 @@ load_dotenv()
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
 TRACKER_DB   = "ep_forward_tracker.db"
-MAX_HOLD_DAYS = 20  # Pradeep: 20+ dias = 95% WR na KB
+MAX_HOLD_EP      = 20   # Pradeep: 20+ dias = 95% WR na KB
+MAX_HOLD_CANSLIM = 40   # O'Neil: segurar líderes 6-8 semanas
+MAX_HOLD_DAYS    = MAX_HOLD_EP  # alias para compatibilidade
 
 
 # ─── SCHEMA ───────────────────────────────────────────────────────────────────
@@ -44,9 +46,13 @@ CREATE TABLE IF NOT EXISTS forward_tests (
     gap_pct         REAL,
     vol_ratio       REAL,
     magna_score     INTEGER,
+    strategy_type   TEXT DEFAULT 'EP',   -- EP / CANSLIM
     ep_type         TEXT,
+    oneil_score     INTEGER,
+    oneil_grade     TEXT,
+    oneil_setup     TEXT,
     entry_window    TEXT,
-    stop_price      REAL,                 -- âncora: mínima do gap day
+    stop_price      REAL,                 -- âncora: EP=mínima gap day, CANSLIM=7-8% abaixo base
     stop_pct        REAL,
     prev_close      REAL,                 -- fecho pré-EP (pivot original)
     catalyst        TEXT,
@@ -113,13 +119,18 @@ def save_candidates(candidates: list, scan_date: str = None) -> int:
         entry_price = c.get("price", 0)
         stop_price  = c.get("stop_price", 0)
 
+        strategy = c.get("strategy_type", "EP")
+        if strategy == "CANSLIM" and not stop_price:
+            stop_price = round(entry_price * 0.92, 2)
+
         conn.execute("""
             INSERT INTO forward_tests
             (ticker, scan_date, entry_price, gap_pct, vol_ratio, magna_score,
-             ep_type, entry_window, stop_price, stop_pct, prev_close,
+             strategy_type, ep_type, oneil_score, oneil_grade, oneil_setup,
+             entry_window, stop_price, stop_pct, prev_close,
              catalyst, thesis, sector, float_m,
              status, current_price, max_price, min_price, last_updated)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                     'OPEN',?,?,?,?)
         """, (
             ticker, today,
@@ -127,7 +138,11 @@ def save_candidates(candidates: list, scan_date: str = None) -> int:
             c.get("gap_pct", 0),
             c.get("vol_ratio", 0),
             c.get("magna_score", 0),
+            strategy,
             c.get("ep_type", "STANDARD"),
+            c.get("oneil_score", 0),
+            c.get("oneil_grade", ""),
+            c.get("oneil_setup", ""),
             c.get("entry_window", "PRIME"),
             stop_price,
             c.get("stop_pct", 8),
@@ -136,10 +151,7 @@ def save_candidates(candidates: list, scan_date: str = None) -> int:
             c.get("thesis", ""),
             c.get("sector", ""),
             c.get("float_m", 0),
-            entry_price,   # current = entry no início
-            entry_price,   # max = entry no início
-            entry_price,   # min = entry no início
-            today,
+            entry_price, entry_price, entry_price, today,
         ))
         saved += 1
 
@@ -185,6 +197,9 @@ def update_positions(today_data: dict = None, today_str: str = None) -> dict:
         except:
             hold_days = 0
 
+        strategy = pos["strategy_type"] if "strategy_type" in pos.keys() else "EP"
+        max_hold = MAX_HOLD_CANSLIM if strategy == "CANSLIM" else MAX_HOLD_EP
+
         # Obter preço actual
         current_price = _get_price(ticker, today_data)
         if current_price is None or current_price <= 0:
@@ -208,7 +223,7 @@ def update_positions(today_data: dict = None, today_str: str = None) -> dict:
             exit_reason = "STOP_HIT"
 
         # 2. Expirado (20 dias) — fecha com o resultado actual
-        elif hold_days >= MAX_HOLD_DAYS:
+        elif hold_days >= max_hold:
             status      = "WIN" if return_pct > 0 else "LOSS"
             exit_reason = "EXPIRED_20D"
 
@@ -396,9 +411,22 @@ def get_tracker_stats() -> dict:
 
     conn.close()
 
+    def _calc_stats(positions):
+        if not positions: return {"n": 0, "win_rate": 0, "avg_return": 0}
+        w    = sum(1 for p in positions if p["status"] == "WIN")
+        rets = [p["return_pct"] for p in positions if p["return_pct"] is not None]
+        return {
+            "n":          len(positions),
+            "win_rate":   round(w / len(positions) * 100, 1),
+            "avg_return": round(sum(rets) / len(rets), 2) if rets else 0,
+        }
+
+    ep_closed = [p for p in closed_pos if (p["strategy_type"] if "strategy_type" in p.keys() else "EP") == "EP"]
+    cs_closed = [p for p in closed_pos if (p["strategy_type"] if "strategy_type" in p.keys() else "EP") == "CANSLIM"]
+
     return {
         "open":          [dict(p) for p in open_pos],
-        "closed":        [dict(p) for p in closed_pos[:20]],  # últimos 20
+        "closed":        [dict(p) for p in closed_pos[:20]],
         "total_tracked": total_closed + len(open_pos),
         "total_closed":  total_closed,
         "total_open":    len(open_pos),
@@ -411,6 +439,8 @@ def get_tracker_stats() -> dict:
         "best_trade":    round(best_trade, 2),
         "worst_trade":   round(worst_trade, 2),
         "tier_stats":    tier_stats,
+        "ep_stats":      _calc_stats(ep_closed),
+        "canslim_stats": _calc_stats(cs_closed),
     }
 
 
