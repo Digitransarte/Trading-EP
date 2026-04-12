@@ -1,34 +1,34 @@
 # EP Daily Scanner — GitHub Actions
 #
 # Job 1 — Manhã 07:00 Lisboa (Verão UTC+1)
-#   Polygon EOD: detecta EPs de ontem (janela OPEN)
-#   Filtros KB: gap >= 20%, vol ratio >= 10x (recomendação KB com 2324 trades)
+#   Polygon EOD + Claude + publica GitHub Pages
 #
 # Job 2 — Tarde 16:00 Lisboa (Verão UTC+1)
-#   yfinance intraday: detecta EPs do dia actual (janela PRIME)
-#   Filtros mais permissivos (mercado ainda aberto, tempo para avaliar)
+#   yfinance intraday PRIME + publica GitHub Pages
 #
 # Horários de inverno (Out-Mar, UTC+0):
 #   Manhã:  '0 7  * * 1-5'
 #   Tarde:  '0 16 * * 1-5'
-#
-# Custo Claude estimado: ~$0.07/dia · ~$1.64/mês (só quando há candidatos)
 
 name: EP Daily Scanner
 
 on:
   schedule:
-    - cron: '0 6  * * 1-5'   # 07:00 Lisboa (Verão UTC+1)
-    - cron: '0 15 * * 1-5'   # 16:00 Lisboa (Verão UTC+1) — intraday PRIME
+    - cron: '0 6  * * 1-5'   # 07:00 Lisboa (Verão)
+    - cron: '0 15 * * 1-5'   # 16:00 Lisboa (Verão)
   workflow_dispatch:
 
 jobs:
 
-  # ── Job 1: Scan da manhã (Polygon EOD) ──────────────────────────────────────
+  # ── Job 1: Scan da manhã ─────────────────────────────────────────────────────
   scan-morning:
     name: Scan Manha (EOD)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +39,7 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Scan EOD + Claude + guardar cache
+      - name: Scan EOD + Claude
         env:
           POLYGON_API_KEY:    ${{ secrets.POLYGON_API_KEY }}
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
@@ -55,7 +55,17 @@ jobs:
             --max-candidates 5 \
             --output-json results.json
 
-      - name: Guardar cache de closes (para scan da tarde)
+      - name: Gerar relatório HTML
+        run: python ep_report_generator.py --input results.json --output docs/index.html
+
+      - name: Publicar GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          keep_files: false
+
+      - name: Guardar cache closes
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -71,11 +81,15 @@ jobs:
           path: results.json
           retention-days: 30
 
-  # ── Job 2: Scan da tarde (yfinance intraday PRIME) ───────────────────────────
+  # ── Job 2: Scan da tarde ─────────────────────────────────────────────────────
   scan-afternoon:
     name: Scan Tarde (Intraday PRIME)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -86,7 +100,7 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Download cache de closes (do job da manhã, se existir)
+      - name: Download cache closes
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -105,6 +119,18 @@ jobs:
           python ep_intraday_scanner.py \
             --min-gap 15.0 \
             --min-vol-ratio 5.0
+          # Gerar results.json para o relatório
+          echo '{"scan_type":"INTRADAY_PRIME","candidates":[],"canslim":[]}' > results.json 2>/dev/null || true
+
+      - name: Gerar relatório HTML (intraday)
+        run: python ep_report_generator.py --input results.json --output docs/index.html
+
+      - name: Publicar GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          keep_files: false
 
       - name: Guardar resultados
         uses: actions/upload-artifact@v4
