@@ -2,22 +2,24 @@
 #
 # Job 1 — Manhã 07:00 Lisboa (Verão UTC+1)
 #   Polygon EOD: detecta EPs de ontem (janela OPEN)
-#   Guarda ep_prev_closes.json como artefacto para o job da tarde
+#   Filtros KB: gap >= 20%, vol ratio >= 10x (recomendação KB com 2324 trades)
 #
 # Job 2 — Tarde 16:00 Lisboa (Verão UTC+1)
 #   yfinance intraday: detecta EPs do dia actual (janela PRIME)
-#   Usa ep_prev_closes.json do job da manhã
+#   Filtros mais permissivos (mercado ainda aberto, tempo para avaliar)
 #
 # Horários de inverno (Out-Mar, UTC+0):
 #   Manhã:  '0 7  * * 1-5'
-#   Tarde:  '0 15 * * 1-5'
+#   Tarde:  '0 16 * * 1-5'
+#
+# Custo Claude estimado: ~$0.07/dia · ~$1.64/mês (só quando há candidatos)
 
 name: EP Daily Scanner
 
 on:
   schedule:
-    - cron: '0 6  * * 1-5'   # 07:00 Lisboa (Verão)
-    - cron: '0 15 * * 1-5'   # 16:00 Lisboa (Verão) — intraday PRIME
+    - cron: '0 6  * * 1-5'   # 07:00 Lisboa (Verão UTC+1)
+    - cron: '0 15 * * 1-5'   # 16:00 Lisboa (Verão UTC+1) — intraday PRIME
   workflow_dispatch:
 
 jobs:
@@ -37,7 +39,7 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Scan EOD + guardar cache
+      - name: Scan EOD + Claude + guardar cache
         env:
           POLYGON_API_KEY:    ${{ secrets.POLYGON_API_KEY }}
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
@@ -47,10 +49,10 @@ jobs:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         run: |
           python ep_daily_runner.py \
-            --min-score 40 \
-            --min-gap 8.0 \
-            --min-vol-ratio 3.0 \
-            --max-candidates 8 \
+            --min-gap 20.0 \
+            --min-vol-ratio 10.0 \
+            --min-score 50 \
+            --max-candidates 5 \
             --output-json results.json
 
       - name: Guardar cache de closes (para scan da tarde)
@@ -59,7 +61,7 @@ jobs:
         with:
           name: prev-closes-${{ github.run_id }}
           path: ep_prev_closes.json
-          retention-days: 1   # só precisa de durar 1 dia
+          retention-days: 1
 
       - name: Guardar resultados
         uses: actions/upload-artifact@v4
@@ -74,7 +76,6 @@ jobs:
     name: Scan Tarde (Intraday PRIME)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Corre independentemente — se manhã falhou, tenta na mesma
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +88,7 @@ jobs:
 
       - name: Download cache de closes (do job da manhã, se existir)
         uses: actions/download-artifact@v4
-        continue-on-error: true   # não falha se manhã não correu
+        continue-on-error: true
         with:
           pattern: prev-closes-*
           merge-multiple: true
@@ -102,8 +103,8 @@ jobs:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         run: |
           python ep_intraday_scanner.py \
-            --min-gap 8.0 \
-            --min-vol-ratio 3.0
+            --min-gap 15.0 \
+            --min-vol-ratio 5.0
 
       - name: Guardar resultados
         uses: actions/upload-artifact@v4
