@@ -1,5 +1,6 @@
 # EP Daily Scanner — GitHub Actions
 #
+
 # Job 1 — Manhã 07:00 Lisboa (Verão UTC+1) — Polygon EOD + Claude
 # Job 2 — Tarde 16:00 Lisboa (Verão UTC+1) — yfinance intraday PRIME
 # Job 3 — Deploy GitHub Pages (corre após manhã)
