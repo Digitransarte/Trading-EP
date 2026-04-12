@@ -518,13 +518,14 @@ def run_scan(min_gap=8.0, min_vol=300_000, min_price=8.0, min_vol_ratio=3.0,
             "score":      r["score"],
         })
 
-    print(f"\n✅ Scan completo — {len(final)} EP · {len(canslim_final)} CANSLIM")
+    print(f"\n[OK] Scan completo — {len(final)} EP · {len(canslim_final)} CANSLIM")
     return {
-        "session_date": session_date,
-        "prev_date":    prev_date,
-        "n_universe":   len(today_data),
-        "candidates":   final,
-        "canslim":      canslim_final,
+        "session_date":    session_date,
+        "prev_date":       prev_date,
+        "n_universe":      len(today_data),
+        "candidates":      final,
+        "canslim":         canslim_final,
+        "_raw_today_data": today_data,   # cache para scan intraday das 17h
     }
 
 
