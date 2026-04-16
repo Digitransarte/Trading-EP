@@ -2294,7 +2294,7 @@ with st.sidebar:
 **10** IPO <10 anos  
 """)
 
-tab_scan, tab_watchlist, tab_kb_learn, tab_tracker = st.tabs(["🔍 Scanner", "📌 Watchlist", "🧠 O que aprendi", "🧪 Forward Tracker"])
+tab_scan, tab_watchlist, tab_kb_learn, tab_tracker, tab_monitor = st.tabs(["🔍 Scanner", "📌 Watchlist", "🧠 O que aprendi", "🧪 Forward Tracker", "📡 Monitor EP"])
 
 with tab_scan:
     today_str, prev_str = find_trading_day_with_data()
@@ -2659,3 +2659,11 @@ with tab_tracker:
 
 if __name__ == "__main__":
     pass
+
+with tab_monitor:
+    st.empty()
+    try:
+        from ep_pullback_monitor import render_monitor_tab
+        render_monitor_tab()
+    except Exception as e:
+        st.error(f"Monitor erro: {e}")
