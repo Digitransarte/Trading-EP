@@ -12,6 +12,8 @@
 name: EP Daily Scanner
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '0 6 * * 1-5'
     - cron: '0 15 * * 1-5'
