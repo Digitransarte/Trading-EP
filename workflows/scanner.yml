@@ -6,7 +6,7 @@
 # Job 3 — Deploy GitHub Pages (corre após manhã)
 #
 # Horários de inverno (Out-Mar, UTC+0):
-#   Manhã:  '0 7  * * 1-5'
+#   Manhã:  '0 8  * * 1-5'
 #   Tarde:  '0 16 * * 1-5'
 
 name: EP Daily Scanner
