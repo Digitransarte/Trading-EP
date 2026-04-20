@@ -1,15 +1,15 @@
 name: EP Scanner
-
 on:
   push:
     branches: [main]
   schedule:
     - cron: '0 6 * * 1-5'
   workflow_dispatch:
-
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,3 +25,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONIOENCODING: utf-8
         run: python ep_daily_runner.py --min-gap 20.0 --min-vol-ratio 10.0 --min-score 50 --max-candidates 5 --output-json results.json
+      - name: Commit tracker state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tracker_open.json tracker_closed.json
+          git diff --cached --quiet && echo "Sem mudancas no tracker" || git commit -m "[skip ci] Tracker update $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
