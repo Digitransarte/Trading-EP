@@ -19,6 +19,7 @@ from datetime import datetime
 from ep_scanner_headless import run_scan
 from ep_notifier_telegram import notify, send_test_message
 from ep_forward_tracker import save_candidates, update_positions, format_tracker_telegram
+from tracker_json_sync import load_from_json, export_to_json
 
 PREV_CLOSES_FILE = "ep_prev_closes.json"
 
@@ -78,7 +79,11 @@ def main():
         ok = send_test_message()
         sys.exit(0 if ok else 1)
 
-    # ── Full scan ─────────────────────────────────────────────────────────────
+  # ── Load tracker state from JSON (fonte de verdade) ─────────────────────
+    print("\n[Sync] A carregar estado do tracker a partir dos JSONs...")
+    load_from_json()
+  
+  # ── Full scan ─────────────────────────────────────────────────────────────
     print(f"\n{'='*50}")
     print(f"  EP Scanner — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*50}")
@@ -217,7 +222,9 @@ def main():
     print(f"  Universo:    {result.get('n_universe', 0):,} tickers")
     print(f"  Candidatos:  {len(candidates)} detectados · {len(filtered)} notificados")
     print(f"{'='*50}\n")
-
+# ── Export tracker state to JSON (sera commitado pelo workflow) ─────────
+    print("[Sync] A exportar estado do tracker para JSON...")
+    export_to_json(session_date=result.get("session_date"))
     sys.exit(0)
 
 
